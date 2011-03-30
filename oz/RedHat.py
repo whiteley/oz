@@ -18,6 +18,8 @@ import re
 import os
 import shutil
 import urllib2
+import paramiko
+import Crypto
 
 import Guest
 import ozutil
@@ -301,11 +303,29 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
             self.guestfs_handle_cleanup(g_handle)
 
     def guest_execute_command(self, guestaddr, command):
-        return Guest.subprocess_check_output(["ssh", "-i", self.sshprivkey,
-                                              "-o", "StrictHostKeyChecking=no",
-                                              "-o", "ConnectTimeout=5",
-                                              "-o", "UserKnownHostsFile=/dev/null",
-                                              "root@" + guestaddr, command])
+        key = paramiko.RSAKey.from_private_key_file(self.sshprivkey)
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.MissingHostKeyPolicy())
+        Crypto.Random.atfork()
+        ssh.connect(guestaddr, username='root', pkey=key, timeout=5)
+
+        channel = ssh.get_transport().open_session()
+        channel.exec_command(command)
+        inchan = channel.makefile('wb', -1)
+        outchan = channel.makefile('rb', -1)
+        errchan = channel.makefile_stderr('rb', -1)
+        retcode = channel.recv_exit_status()
+
+        stdout = ''.join(outchan.readlines())
+        stderr = ''.join(errchan.readlines())
+
+        ssh.close()
+
+        if retcode:
+            raise OzException.OzException("'%s' failed(%d): %s" % (command, retcode, stderr))
+
+        return (stdout, stderr, retcode)
 
     def do_icicle(self, guestaddr):
         stdout, stderr, retcode = self.guest_execute_command(guestaddr,
@@ -335,15 +355,17 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
 
         return icicle_output
 
-    def guest_live_upload(self, guestaddr, file_to_upload, destination):
-        self.guest_execute_command(guestaddr, "mkdir -p " + os.path.dirname(destination))
+    def guest_live_upload(self, guestaddr, source, destination):
+        self.guest_execute_command(guestaddr,
+                                   "mkdir -p " + os.path.dirname(destination))
 
-        return Guest.subprocess_check_output(["scp", "-i", self.sshprivkey,
-                                              "-o", "StrictHostKeyChecking=no",
-                                              "-o", "ConnectTimeout=5",
-                                              "-o", "UserKnownHostsFile=/dev/null",
-                                              file_to_upload,
-                                              "root@" + guestaddr + ":" + destination])
+        key = paramiko.RSAKey.from_private_key_file(self.sshprivkey)
+        transport = paramiko.Transport((guestaddr, 22))
+        transport.connect(username='root', pkey=key)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        sftp.put(source, destination)
+        sftp.close()
+        transport.close()
 
     def customize_files(self, guestaddr):
         self.log.info("Uploading custom files")

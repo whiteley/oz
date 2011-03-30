@@ -17,6 +17,8 @@
 import re
 import shutil
 import os
+import paramiko
+import Crypto
 
 import Guest
 import ozutil
@@ -109,11 +111,29 @@ class OpenSUSEGuest(Guest.CDGuest):
             libvirt_dom.destroy()
 
     def guest_execute_command(self, guestaddr, command):
-        return Guest.subprocess_check_output(["ssh", "-i", self.sshprivkey,
-                                              "-o", "StrictHostKeyChecking=no",
-                                              "-o", "ConnectTimeout=5",
-                                              "-o", "UserKnownHostsFile=/dev/null",
-                                              "root@" + guestaddr, command])
+        key = paramiko.RSAKey.from_private_key_file(self.sshprivkey)
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.MissingHostKeyPolicy())
+        Crypto.Random.atfork()
+        ssh.connect(guestaddr, username='root', pkey=key, timeout=5)
+
+        channel = ssh.get_transport().open_session()
+        channel.exec_command(command)
+        inchan = channel.makefile('wb', -1)
+        outchan = channel.makefile('rb', -1)
+        errchan = channel.makefile_stderr('rb', -1)
+        retcode = channel.recv_exit_status()
+
+        stdout = ''.join(outchan.readlines())
+        stderr = ''.join(errchan.readlines())
+
+        ssh.close()
+
+        if retcode:
+            raise OzException.OzException("'%s' failed(%d): %s" % (command, retcode, stderr))
+
+        return (stdout, stderr, retcode)
 
     def image_ssh_teardown_step_1(self, g_handle):
         self.log.debug("Teardown step 1")
