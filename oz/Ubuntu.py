@@ -516,7 +516,7 @@ Subsystem       sftp    /usr/libexec/openssh/sftp-server
 
         if packstr != '':
             self.guest_execute_command(guestaddr,
-                                       'apt-get install -y %s' % (packstr),
+                                       'DEBIAN_FRONTEND=noninteractive apt-get install -y %s' % (packstr),
                                        tunnels=None)
 
         self._customize_files(guestaddr)
